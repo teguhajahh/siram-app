@@ -32,10 +32,32 @@ const mqttOptions = MQTT_USER
 
 const mqttClient = mqtt.connect(mqttUrl, mqttOptions);
 
+// ===== Deteksi data basi (stale) =====
+// Kalau ESP2 mati/dicabut, server TIDAK akan tahu secara otomatis lewat
+// MQTT (broker tidak selalu punya LWT diset di firmware ini). Jadi kita
+// pakai timer: kalau tidak ada pesan sensor baru dalam STALE_TIMEOUT_MS,
+// anggap datanya basi dan beri tahu semua klien, supaya dashboard tidak
+// menampilkan angka lama seolah-olah itu masih live.
+const STALE_TIMEOUT_MS = 20000; // 4x interval publish ESP2 (5 detik)
+let staleTimer = null;
+let isStale = false;
+
+function markFresh() {
+  isStale = false;
+  if (staleTimer) clearTimeout(staleTimer);
+  staleTimer = setTimeout(markStale, STALE_TIMEOUT_MS);
+}
+
+function markStale() {
+  isStale = true;
+  io.emit('sensorStale', { stale: true });
+  console.warn('[Stale] Tidak ada data sensor baru, menandai data sebagai basi.');
+}
+
 // ===== State terakhir di memori =====
 // Supaya klien yang baru connect langsung dapat nilai/kondisi terkini,
 // tidak perlu nunggu publish MQTT berikutnya.
-let lastSensorData = { tanah: null, udara: null, updatedAt: null };
+let lastSensorData = { tanah: null, udara: null, suhu: null, updatedAt: null };
 let lastRelayStatus = { pompa_air: false, pompa_pupuk: false }; // status ASLI dari ESP1, bukan asumsi
 
 mqttClient.on('connect', () => {
@@ -70,9 +92,12 @@ mqttClient.on('message', (topic, payload) => {
     lastSensorData = {
       tanah: data.tanah,
       udara: data.udara,
+      suhu: data.suhu,
       updatedAt: new Date().toISOString(),
     };
     io.emit('sensorData', lastSensorData);
+    markFresh(); // data baru masuk -> reset timer stale
+    io.emit('sensorStale', { stale: false }); // selalu kabari klien: data sudah fresh lagi
     console.log('[MQTT -> Socket.io] sensorData:', lastSensorData);
     return;
   }
@@ -98,6 +123,8 @@ io.on('connection', (socket) => {
     socket.emit('sensorData', lastSensorData);
   }
   socket.emit('relayStatus', lastRelayStatus);
+  // Kabari klien baru soal status stale saat ini juga (bukan cuma klien lama)
+  socket.emit('sensorStale', { stale: isStale });
 
   // Browser mengirim perintah, contoh: socket.emit('controlRelay', { pompa_air: true })
   // Field yang tidak disertakan tidak diubah — sama seperti kontrak di ESP1.
@@ -129,10 +156,14 @@ app.get('/health', (req, res) => {
     mqttConnected: mqttClient.connected,
     lastSensorData,
     lastRelayStatus,
+    sensorStale: isStale,
   });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`[Server] Dashboard SIRAMLI-V2 jalan di http://localhost:${PORT}`);
+  // Kalau server baru start dan sudah lama tidak dapat data (mis. restart
+  // setelah lama mati), langsung anggap stale sampai ada pesan MQTT baru.
+  staleTimer = setTimeout(markStale, STALE_TIMEOUT_MS);
 });

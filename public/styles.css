@@ -105,6 +105,36 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
 @media (max-width: 900px){ .grid{ grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px){ .grid{ grid-template-columns: 1fr; } }
 
+.grid-kontrol{ grid-template-columns: 1fr 1fr; }
+@media (max-width: 640px){ .grid-kontrol{ grid-template-columns: 1fr; } }
+
+.grid-monitor{ grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px){ .grid-monitor{ grid-template-columns: 1fr 1fr; } }
+@media (max-width: 640px){ .grid-monitor{ grid-template-columns: 1fr; } }
+
+.stale-banner {
+  background: #3a2410;
+  border: 1px solid #96700a;
+  color: #e8c07a;
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+.grid-monitor.is-stale .metric-big,
+.grid-monitor.is-stale .status-badge {
+  opacity: 0.5;
+}
+
+.section-heading{
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cream-dim);
+  margin: 6px 2px 14px;
+}
+
 .card{
   background: var(--soil-800);
   border: 1px solid var(--soil-line);
@@ -211,39 +241,68 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
 .status-pill.on{ background: rgba(122,154,78,0.18); color: var(--leaf); border:1px solid rgba(122,154,78,0.4); }
 .status-pill.off{ background: rgba(63,125,63,0.08); color: var(--cream-dim); border:1px solid var(--soil-line); }
 
-/* ===== MONITORING ===== */
-.monitor-grid{
-  display:grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
-}
-.metric{
+/* ===== METRIC CARD (Kelembapan Tanah / Suhu Udara / Kelembapan Udara) ===== */
+.metric-card{ display:flex; flex-direction:column; }
+
+.metric-icon{
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  display:flex; align-items:center; justify-content:center;
   background: var(--soil-900);
   border: 1px solid var(--soil-line);
-  border-radius: 10px;
-  padding: 14px 16px;
+  margin-bottom: 14px;
 }
-.metric-label{
+.metric-icon svg{ width: 20px; height: 20px; }
+
+.metric-big{
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--cream-dim);
-  margin-bottom: 8px;
-}
-.metric-value{
-  font-family: var(--font-mono);
-  font-size: 24px;
+  font-size: 32px;
   font-weight: 600;
+  color: var(--cream);
+  line-height: 1;
 }
-.metric-value.water{ color: var(--water-bright); }
 .metric-unit{ font-size: 12px; color: var(--cream-dim); font-weight: 400; margin-left: 2px; }
+
+.status-badge{
+  display:inline-block;
+  width: fit-content;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 4px 11px;
+  border-radius: 999px;
+  margin-top: 10px;
+}
+.status-badge.status-ok{ background: rgba(122,154,78,0.18); color: var(--leaf); border:1px solid rgba(122,154,78,0.4); }
+.status-badge.status-danger{ background: rgba(161,58,38,0.12); color: var(--danger); border:1px solid rgba(161,58,38,0.35); }
+.status-badge.status-info{ background: rgba(32,107,128,0.12); color: var(--water-bright); border:1px solid rgba(32,107,128,0.3); }
+.status-badge.status-warn{ background: rgba(150,112,10,0.12); color: var(--amber); border:1px solid rgba(150,112,10,0.35); }
+
+.progress-track{
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--soil-700);
+  overflow: hidden;
+  margin-top: 14px;
+}
+.progress-fill{
+  height: 100%;
+  border-radius: 999px;
+  background: var(--water-bright);
+  transition: width 0.4s ease, background-color 0.3s ease;
+}
+.progress-fill.status-ok{ background: var(--leaf); }
+.progress-fill.status-danger{ background: var(--danger); }
+.progress-fill.status-info{ background: var(--water-bright); }
+.progress-fill.status-warn{ background: var(--amber); }
 
 .monitor-status{
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--cream-dim);
-  margin-top: 12px;
+  margin: 12px 2px 20px;
 }
 
 /* ===== RESPONSIVE (HP) ===== */
@@ -252,12 +311,6 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
   .clock-block{ text-align: left; }
   .clock-time{ font-size: 26px; }
   .card{ padding: 18px; }
-  .monitor-grid{ grid-template-columns: 1fr 1fr; gap: 10px; }
-  .metric{ padding: 12px; }
-  .metric-value{ font-size: 20px; }
+  .metric-big{ font-size: 26px; }
   .control-right{ margin-left: auto; }
-}
-
-@media (max-width: 380px){
-  .monitor-grid{ grid-template-columns: 1fr; }
 }

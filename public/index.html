@@ -22,9 +22,9 @@
     </div>
   </header>
 
-  <div class="grid">
+  <!-- KONTROL POMPA -->
+  <div class="grid grid-kontrol">
 
-    <!-- POMPA AIR -->
     <div class="card">
       <div class="card-title">Pompa Air</div>
       <div class="control-row">
@@ -47,7 +47,6 @@
       </div>
     </div>
 
-    <!-- POMPA PUPUK CAIR -->
     <div class="card">
       <div class="card-title">Pompa Pupuk Cair</div>
       <div class="control-row">
@@ -70,22 +69,60 @@
       </div>
     </div>
 
-    <!-- MONITORING -->
-    <div class="card">
-      <div class="card-title">Monitoring Lahan</div>
-      <div class="monitor-grid">
-        <div class="metric">
-          <div class="metric-label">Kelembapan Tanah</div>
-          <div class="metric-value water"><span id="valTanah">--</span><span class="metric-unit">%</span></div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Kelembapan Udara</div>
-          <div class="metric-value water"><span id="valUdara">--</span><span class="metric-unit">%</span></div>
-        </div>
-      </div>
-      <div class="monitor-status" id="monitorStatus">Menghubungkan ke server...</div>
-    </div>
   </div>
+
+  <div class="section-heading">Monitoring Lahan</div>
+
+  <!-- Peringatan data basi — tersembunyi secara default, dimunculkan lewat JS -->
+  <div class="stale-banner" id="staleBanner" style="display:none;">
+    ⚠️ Data sensor sudah tidak diperbarui — kemungkinan ESP32 sensor mati/tidak terhubung. Menampilkan data terakhir.
+  </div>
+
+  <!-- MONITORING (3 card terpisah) -->
+  <div class="grid grid-monitor" id="monitorGrid">
+
+    <!-- KELEMBAPAN TANAH -->
+    <div class="card metric-card">
+      <div class="card-title">Kelembapan Tanah</div>
+      <div class="metric-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#96700a" stroke-width="1.8">
+          <path d="M12 3c-3 4-5 7-5 10a5 5 0 0 0 10 0c0-3-2-6-5-10z"/>
+        </svg>
+      </div>
+      <div class="metric-big"><span id="valTanah">--</span><span class="metric-unit">%</span></div>
+      <div class="status-badge" id="badgeTanah">--</div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progressTanah" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- SUHU UDARA -->
+    <div class="card metric-card">
+      <div class="card-title">Suhu Udara</div>
+      <div class="metric-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#c9552a" stroke-width="1.8">
+          <path d="M12 14.5V4a2 2 0 1 0-4 0v10.5a4 4 0 1 0 4 0z"/>
+        </svg>
+      </div>
+      <div class="metric-big"><span id="valSuhu">--</span><span class="metric-unit">°C</span></div>
+      <div class="status-badge" id="badgeSuhu">--</div>
+    </div>
+
+    <!-- KELEMBAPAN UDARA -->
+    <div class="card metric-card">
+      <div class="card-title">Kelembapan Udara</div>
+      <div class="metric-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#2b8299" stroke-width="1.8">
+          <path d="M12 3c-3 4-6 8-6 11a6 6 0 0 0 12 0c0-3-3-7-6-11z"/>
+        </svg>
+      </div>
+      <div class="metric-big"><span id="valUdara">--</span><span class="metric-unit">%</span></div>
+      <div class="status-badge" id="badgeUdara">--</div>
+    </div>
+
+  </div>
+
+  <div class="monitor-status" id="monitorStatus">Menghubungkan ke server...</div>
 
   <!-- SIGNATURE: SOLAR ARC -->
 
@@ -145,8 +182,40 @@
 
   // ===== Data sensor real-time =====
   const valTanahEl = document.getElementById('valTanah');
+  const valSuhuEl = document.getElementById('valSuhu');
   const valUdaraEl = document.getElementById('valUdara');
+  const badgeTanahEl = document.getElementById('badgeTanah');
+  const badgeSuhuEl = document.getElementById('badgeSuhu');
+  const badgeUdaraEl = document.getElementById('badgeUdara');
+  const progressTanahEl = document.getElementById('progressTanah');
   const monitorStatusEl = document.getElementById('monitorStatus');
+  const staleBannerEl = document.getElementById('staleBanner');
+  const monitorGridEl = document.getElementById('monitorGrid');
+
+  const STATUS_CLASSES = ['status-ok', 'status-danger', 'status-info', 'status-warn'];
+
+  function setBadge(el, label, statusClass){
+    el.textContent = label;
+    el.classList.remove(...STATUS_CLASSES);
+    el.classList.add(statusClass);
+  }
+
+  // Ambang batas sesuai spesifikasi:
+  function statusTanah(persen){
+    if (persen < 30) return { label: 'Kering', cls: 'status-danger' };
+    if (persen <= 70) return { label: 'Lembab', cls: 'status-ok' };
+    return { label: 'Basah', cls: 'status-info' };
+  }
+  function statusSuhu(celsius){
+    if (celsius < 20) return { label: 'Dingin', cls: 'status-info' };
+    if (celsius <= 32) return { label: 'Normal', cls: 'status-ok' };
+    return { label: 'Panas', cls: 'status-danger' };
+  }
+  function statusUdara(persen){
+    if (persen < 40) return { label: 'Udara Kering', cls: 'status-warn' };
+    if (persen <= 70) return { label: 'Udara Ideal', cls: 'status-ok' };
+    return { label: 'Sangat Lembab', cls: 'status-info' };
+  }
 
   socket.on('connect', () => {
     monitorStatusEl.textContent = 'Tersambung ke server, menunggu data sensor...';
@@ -157,11 +226,38 @@
   });
 
   socket.on('sensorData', (data) => {
-    if (typeof data.tanah === 'number') valTanahEl.textContent = data.tanah;
-    if (typeof data.udara === 'number') valUdaraEl.textContent = Math.round(data.udara);
+    if (typeof data.tanah === 'number') {
+      valTanahEl.textContent = data.tanah;
+      const s = statusTanah(data.tanah);
+      setBadge(badgeTanahEl, s.label, s.cls);
+      progressTanahEl.style.width = `${Math.max(0, Math.min(100, data.tanah))}%`;
+      progressTanahEl.classList.remove(...STATUS_CLASSES);
+      progressTanahEl.classList.add(s.cls);
+    }
+
+    if (typeof data.suhu === 'number') {
+      valSuhuEl.textContent = data.suhu.toFixed(1);
+      const s = statusSuhu(data.suhu);
+      setBadge(badgeSuhuEl, s.label, s.cls);
+    }
+
+    if (typeof data.udara === 'number') {
+      valUdaraEl.textContent = Math.round(data.udara);
+      const s = statusUdara(data.udara);
+      setBadge(badgeUdaraEl, s.label, s.cls);
+    }
 
     const jamUpdate = new Date(data.updatedAt).toLocaleTimeString('id-ID');
     monitorStatusEl.textContent = `Diperbarui pukul ${jamUpdate}`;
+  });
+
+  // ===== Deteksi data basi (stale) =====
+  // Server yang memutuskan kapan data dianggap basi (lihat STALE_TIMEOUT_MS
+  // di server.js), browser cuma menampilkan peringatannya supaya orang di
+  // lapangan tidak salah kira sensor masih hidup padahal sudah lama diam.
+  socket.on('sensorStale', ({ stale }) => {
+    staleBannerEl.style.display = stale ? 'block' : 'none';
+    monitorGridEl.classList.toggle('is-stale', !!stale);
   });
 </script>
 </body>
