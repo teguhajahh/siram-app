@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel Kontrol Irigasi — SIRAMLI V2</title>
+<link rel = "stylesheet" href="styles.css">
+<script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="all">
+      <div class="brand-eyebrow">BRMP · Sistem Fertigasi Lahan Kering</div>
+      <h1>SIRAMLI<span>-V2</span></h1>
+      <div class="field-meta">Blok Cabai A1 · Node ESP32-01</div>
+    </div>
+    <div class="clock-block">
+      <div class="clock-time" id="jam">--:--:--</div>
+      <div class="clock-date" id="tanggal">-- --- ----</div>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- POMPA AIR -->
+    <div class="card">
+      <div class="card-title">Pompa Air</div>
+      <div class="control-row">
+        <div class="control-left">
+          <div class="valve-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#6db6d6" stroke-width="1.8">
+              <path d="M12 2v6M8 8h8l-2 4h-4l-2-4z"/>
+              <path d="M12 12v10M8 22h8"/>
+            </svg>
+          </div>
+          <div>
+            <div class="control-name">Pompa Air Utama</div>
+            <div class="control-sub">Sumber tandon → jalur distribusi</div>
+          </div>
+        </div>
+        <div class="control-right">
+          <span class="status-pill off" id="pillAir">OFF</span>
+          <div class="toggle" id="toggleAir"><div class="knob"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- POMPA PUPUK CAIR -->
+    <div class="card">
+      <div class="card-title">Pompa Pupuk Cair</div>
+      <div class="control-row">
+        <div class="control-left">
+          <div class="valve-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#e8622f" stroke-width="1.8">
+              <circle cx="12" cy="12" r="8"/>
+              <path d="M9 12h6M12 9v6" stroke-width="1.4"/>
+            </svg>
+          </div>
+          <div>
+            <div class="control-name">Pompa Pupuk Cair</div>
+            <div class="control-sub">Injeksi larutan pupuk ke jalur utama</div>
+          </div>
+        </div>
+        <div class="control-right">
+          <span class="status-pill off" id="pillPupuk">OFF</span>
+          <div class="toggle" id="togglePupuk"><div class="knob"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MONITORING -->
+    <div class="card">
+      <div class="card-title">Monitoring Lahan</div>
+      <div class="monitor-grid">
+        <div class="metric">
+          <div class="metric-label">Kelembapan Tanah</div>
+          <div class="metric-value water"><span id="valTanah">--</span><span class="metric-unit">%</span></div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Kelembapan Udara</div>
+          <div class="metric-value water"><span id="valUdara">--</span><span class="metric-unit">%</span></div>
+        </div>
+      </div>
+      <div class="monitor-status" id="monitorStatus">Menghubungkan ke server...</div>
+    </div>
+  </div>
+
+  <!-- SIGNATURE: SOLAR ARC -->
+
+</div>
+
+<script>
+  // ===== Jam & tanggal real-time =====
+  const hariList = ["Minggu","Senin","Selasa","Rabu","Kamis","Jumat","Sabtu"];
+  const bulanList = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+
+  function updateClock(){
+    const now = new Date();
+    const jamEl = document.getElementById('jam');
+    const tglEl = document.getElementById('tanggal');
+    const pad = n => n.toString().padStart(2,'0');
+    jamEl.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    tglEl.textContent = `${hariList[now.getDay()]}, ${now.getDate()} ${bulanList[now.getMonth()]} ${now.getFullYear()}`;
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // ===== Koneksi Socket.io =====
+  const socket = io();
+
+  // ===== Kontrol relay =====
+  // Klik toggle HANYA mengirim perintah ke server (server -> MQTT -> ESP1).
+  // Tampilan toggle baru berubah setelah dapat konfirmasi status asli dari
+  // ESP1 lewat event 'relayStatus' — supaya dashboard tidak "berbohong"
+  // kalau relay gagal menyala di lapangan.
+  function setupToggle(toggleId, fieldName){
+    const toggle = document.getElementById(toggleId);
+    toggle.addEventListener('click', () => {
+      const nextState = !toggle.classList.contains('on');
+      socket.emit('controlRelay', { [fieldName]: nextState });
+    });
+  }
+  setupToggle('toggleAir', 'pompa_air');
+  setupToggle('togglePupuk', 'pompa_pupuk');
+
+  function applyRelayStatus(status){
+    const map = [
+      { field: 'pompa_air',   toggleId: 'toggleAir',   pillId: 'pillAir' },
+      { field: 'pompa_pupuk', toggleId: 'togglePupuk', pillId: 'pillPupuk' },
+    ];
+    map.forEach(({ field, toggleId, pillId }) => {
+      if (!(field in status)) return;
+      const isOn = !!status[field];
+      const toggle = document.getElementById(toggleId);
+      const pill = document.getElementById(pillId);
+      toggle.classList.toggle('on', isOn);
+      pill.textContent = isOn ? 'ON' : 'OFF';
+      pill.classList.toggle('on', isOn);
+      pill.classList.toggle('off', !isOn);
+    });
+  }
+  socket.on('relayStatus', applyRelayStatus);
+
+  // ===== Data sensor real-time =====
+  const valTanahEl = document.getElementById('valTanah');
+  const valUdaraEl = document.getElementById('valUdara');
+  const monitorStatusEl = document.getElementById('monitorStatus');
+
+  socket.on('connect', () => {
+    monitorStatusEl.textContent = 'Tersambung ke server, menunggu data sensor...';
+  });
+
+  socket.on('disconnect', () => {
+    monitorStatusEl.textContent = 'Koneksi ke server terputus — mencoba menyambung ulang...';
+  });
+
+  socket.on('sensorData', (data) => {
+    if (typeof data.tanah === 'number') valTanahEl.textContent = data.tanah;
+    if (typeof data.udara === 'number') valUdaraEl.textContent = Math.round(data.udara);
+
+    const jamUpdate = new Date(data.updatedAt).toLocaleTimeString('id-ID');
+    monitorStatusEl.textContent = `Diperbarui pukul ${jamUpdate}`;
+  });
+</script>
+</body>
+</html>
