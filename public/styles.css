@@ -105,24 +105,24 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
 @media (max-width: 900px){ .grid{ grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px){ .grid{ grid-template-columns: 1fr; } }
 
-.grid-kontrol{ grid-template-columns: 1fr 1fr; }
-@media (max-width: 640px){ .grid-kontrol{ grid-template-columns: 1fr; } }
+.grid-kontrol{ grid-template-columns: 1fr; }
 
 .grid-monitor{ grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 900px){ .grid-monitor{ grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px){ .grid-monitor{ grid-template-columns: 1fr; } }
 
-.stale-banner {
+.stale-banner{
   background: #3a2410;
-  border: 1px solid #96700a;
+  border: 1px solid var(--amber);
   color: #e8c07a;
   padding: 10px 16px;
   border-radius: 8px;
   margin-bottom: 12px;
-  font-size: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 .grid-monitor.is-stale .metric-big,
-.grid-monitor.is-stale .status-badge {
+.grid-monitor.is-stale .status-badge{
   opacity: 0.5;
 }
 
@@ -159,7 +159,7 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
   background: var(--amber);
 }
 
-/* ===== CONTROL ROW (Pompa Air & Pompa Pupuk Cair) ===== */
+/* ===== CONTROL ROW (Pompa Air) ===== */
 .control-row{
   display:flex;
   align-items:center;
@@ -302,8 +302,166 @@ h1 span{ color: var(--chili-bright); font-style: italic; font-weight: 500; }
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--cream-dim);
-  margin: 12px 2px 20px;
+  margin: -6px 2px 20px;
 }
+
+/* ===== LOADING GATE ===== */
+.loading-overlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(255,255,255,0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  transition: opacity 0.3s ease;
+}
+.loading-overlay.hidden{
+  opacity: 0;
+  pointer-events: none;
+}
+.loading-box{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.loading-spinner{
+  width: 36px; height: 36px;
+  border: 3px solid var(--soil-line);
+  border-top-color: var(--leaf);
+  border-radius: 50%;
+  animation: siramli-spin 0.8s linear infinite;
+}
+@keyframes siramli-spin{ to{ transform: rotate(360deg); } }
+.loading-text{
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--cream-dim);
+  letter-spacing: 0.05em;
+}
+
+/* ===== TOGGLE PENDING (nunggu konfirmasi device) ===== */
+.toggle.pending{ opacity: 0.55; cursor: wait; pointer-events: none; }
+.status-pill.pending{
+  background: rgba(150,112,10,0.12);
+  color: var(--amber);
+  border: 1px solid rgba(150,112,10,0.35);
+}
+
+/* ===== JADWAL PENYIRAMAN ===== */
+.schedule-note{
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--cream-dim);
+  margin-bottom: 16px;
+}
+.schedule-list{ display:flex; flex-direction: column; gap: 10px; }
+.schedule-empty{
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--cream-dim);
+  padding: 14px;
+  text-align: center;
+}
+.schedule-item{
+  display:flex;
+  align-items:center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--soil-900);
+  border: 1px solid var(--soil-line);
+  border-radius: 10px;
+}
+.schedule-time{
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--amber);
+  min-width: 72px;
+}
+.schedule-desc{ font-size: 13px; color: var(--cream-dim); flex:1; }
+.schedule-tag{
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(32,107,128,0.12);
+  color: var(--water-bright);
+  border: 1px solid rgba(32,107,128,0.3);
+}
+.schedule-actions{ display:flex; gap: 6px; margin-left: 6px; flex-shrink: 0; }
+.icon-btn{
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--soil-line);
+  color: var(--cream-dim);
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+.icon-btn:hover{ border-color: var(--amber); color: var(--amber); }
+.icon-btn.danger:hover{ border-color: var(--danger); color: var(--danger); }
+
+.schedule-form{
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+  background: var(--soil-900);
+  border: 1px solid var(--soil-line);
+  border-radius: 10px;
+}
+.schedule-form.open{ display: flex; }
+.form-row{ display:flex; gap: 12px; flex-wrap: wrap; }
+.form-field{ flex: 1; min-width: 140px; display:flex; flex-direction: column; gap: 5px; }
+.form-field label{
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cream-dim);
+}
+.form-field input{
+  background: var(--soil-800);
+  border: 1px solid var(--soil-line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--cream);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.form-field input:focus{ outline: 2px solid var(--leaf); outline-offset: 1px; }
+.form-actions{ display:flex; gap: 10px; justify-content: flex-end; }
+.btn-primary, .btn-secondary{
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-primary{ background: var(--leaf); color: var(--soil-900); border: none; }
+.btn-secondary{ background: transparent; color: var(--cream-dim); border: 1px solid var(--soil-line); }
+.btn-secondary:hover{ border-color: var(--cream-dim); }
+.add-schedule{
+  margin-top: 14px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--soil-line);
+  background: transparent;
+  color: var(--cream-dim);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.add-schedule:hover{ border-color: var(--amber); color: var(--amber); }
 
 /* ===== RESPONSIVE (HP) ===== */
 @media (max-width: 600px){

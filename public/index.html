@@ -8,6 +8,15 @@
 <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
+
+<!-- LOADING GATE: menutupi seluruh layar sampai data ASLI dari sensor & pompa datang -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Menyambungkan ke sensor &amp; pompa...</div>
+  </div>
+</div>
+
 <div class="wrap">
 
   <header>
@@ -37,34 +46,12 @@
           </div>
           <div>
             <div class="control-name">Pompa Air Utama</div>
-            <div class="control-sub">Sumber tandon → jalur distribusi</div>
+            <div class="control-sub">Manual, jadwal, atau tombol fisik di panel</div>
           </div>
         </div>
         <div class="control-right">
           <span class="status-pill off" id="pillAir">OFF</span>
           <div class="toggle" id="toggleAir"><div class="knob"></div></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">Pompa Pupuk Cair</div>
-      <div class="control-row">
-        <div class="control-left">
-          <div class="valve-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#e8622f" stroke-width="1.8">
-              <circle cx="12" cy="12" r="8"/>
-              <path d="M9 12h6M12 9v6" stroke-width="1.4"/>
-            </svg>
-          </div>
-          <div>
-            <div class="control-name">Pompa Pupuk Cair</div>
-            <div class="control-sub">Injeksi larutan pupuk ke jalur utama</div>
-          </div>
-        </div>
-        <div class="control-right">
-          <span class="status-pill off" id="pillPupuk">OFF</span>
-          <div class="toggle" id="togglePupuk"><div class="knob"></div></div>
         </div>
       </div>
     </div>
@@ -78,10 +65,9 @@
     ⚠️ Data sensor sudah tidak diperbarui — kemungkinan ESP32 sensor mati/tidak terhubung. Menampilkan data terakhir.
   </div>
 
-  <!-- MONITORING (3 card terpisah) -->
+  <!-- MONITORING -->
   <div class="grid grid-monitor" id="monitorGrid">
 
-    <!-- KELEMBAPAN TANAH -->
     <div class="card metric-card">
       <div class="card-title">Kelembapan Tanah</div>
       <div class="metric-icon">
@@ -96,7 +82,6 @@
       </div>
     </div>
 
-    <!-- SUHU UDARA -->
     <div class="card metric-card">
       <div class="card-title">Suhu Udara</div>
       <div class="metric-icon">
@@ -108,7 +93,6 @@
       <div class="status-badge" id="badgeSuhu">--</div>
     </div>
 
-    <!-- KELEMBAPAN UDARA -->
     <div class="card metric-card">
       <div class="card-title">Kelembapan Udara</div>
       <div class="metric-icon">
@@ -123,6 +107,33 @@
   </div>
 
   <div class="monitor-status" id="monitorStatus">Menghubungkan ke server...</div>
+
+  <!-- JADWAL PENYIRAMAN OTOMATIS (Pompa Air) -->
+  <div class="card">
+    <div class="card-title">Jadwal Penyiraman Otomatis (Pompa Air)</div>
+    <div class="schedule-note">Jadwal ini tersimpan langsung di ESP1 — tetap jalan walau dashboard ditutup atau internet mati.</div>
+
+    <div class="schedule-list" id="scheduleList"></div>
+
+    <div class="schedule-form" id="scheduleForm">
+      <div class="form-row">
+        <div class="form-field">
+          <label for="inputJam">Jam</label>
+          <input type="time" id="inputJam">
+        </div>
+        <div class="form-field">
+          <label for="inputDurasi">Durasi (menit)</label>
+          <input type="number" id="inputDurasi" min="1" placeholder="10">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-secondary" id="btnBatalJadwal" type="button">Batal</button>
+        <button class="btn-primary" id="btnSimpanJadwal" type="button">Simpan</button>
+      </div>
+    </div>
+
+    <button class="add-schedule" id="btnTambahJadwal">+ Tambah Jadwal Penyiraman</button>
+  </div>
 
   <!-- SIGNATURE: SOLAR ARC -->
 
@@ -147,36 +158,76 @@
   // ===== Koneksi Socket.io =====
   const socket = io();
 
-  // ===== Kontrol relay =====
-  // Klik toggle HANYA mengirim perintah ke server (server -> MQTT -> ESP1).
-  // Tampilan toggle baru berubah setelah dapat konfirmasi status asli dari
-  // ESP1 lewat event 'relayStatus' — supaya dashboard tidak "berbohong"
-  // kalau relay gagal menyala di lapangan.
-  function setupToggle(toggleId, fieldName){
-    const toggle = document.getElementById(toggleId);
+  // ===== LOADING GATE =====
+  // Overlay baru hilang setelah SEMUANYA (sensor + status pompa) sudah
+  // pernah dikonfirmasi asli dari device — bukan sekadar socket connect.
+  let hasSensorData = false;
+  let hasRelayStatus = false;
+  const loadingOverlay = document.getElementById('loadingOverlay');
+
+  function checkReady(){
+    if (hasSensorData && hasRelayStatus) {
+      loadingOverlay.classList.add('hidden');
+    }
+  }
+
+  // ===== Kontrol relay (dengan pending-lock, fix lag) =====
+  // Setiap toggle dikunci ('pending') begitu diklik, supaya:
+  // 1. Klik berulang sebelum ada balasan tidak mengirim perintah ganda/salah arah
+  // 2. Ada feedback visual jelas kalau perintah sedang "dalam perjalanan"
+  // Kunci lepas otomatis begitu 'relayStatus' konfirmasi asli datang,
+  // atau otomatis lepas paksa setelah 8 detik kalau device tidak membalas
+  // (misal sedang offline) — supaya tombol tidak macet selamanya.
+  const toggleRefs = {
+    pompa_air: { toggle: document.getElementById('toggleAir'), pill: document.getElementById('pillAir') },
+  };
+
+  function setupToggle(fieldName){
+    const { toggle, pill } = toggleRefs[fieldName];
     toggle.addEventListener('click', () => {
+      if (toggle.classList.contains('pending')) return; // masih nunggu balasan sebelumnya
+
       const nextState = !toggle.classList.contains('on');
+      toggle.classList.add('pending');
+      pill.classList.remove('on', 'off');
+      pill.classList.add('pending');
+      pill.textContent = '...';
+
       socket.emit('controlRelay', { [fieldName]: nextState });
+
+      const timeoutId = setTimeout(() => {
+        toggle.classList.remove('pending');
+        pill.classList.remove('pending');
+        pill.classList.toggle('on', toggle.classList.contains('on'));
+        pill.classList.toggle('off', !toggle.classList.contains('on'));
+        pill.textContent = toggle.classList.contains('on') ? 'ON' : 'OFF';
+      }, 8000);
+      toggle.dataset.pendingTimeout = timeoutId;
     });
   }
-  setupToggle('toggleAir', 'pompa_air');
-  setupToggle('togglePupuk', 'pompa_pupuk');
+  setupToggle('pompa_air');
 
   function applyRelayStatus(status){
-    const map = [
-      { field: 'pompa_air',   toggleId: 'toggleAir',   pillId: 'pillAir' },
-      { field: 'pompa_pupuk', toggleId: 'togglePupuk', pillId: 'pillPupuk' },
-    ];
-    map.forEach(({ field, toggleId, pillId }) => {
+    Object.keys(toggleRefs).forEach((field) => {
       if (!(field in status)) return;
       const isOn = !!status[field];
-      const toggle = document.getElementById(toggleId);
-      const pill = document.getElementById(pillId);
+      const { toggle, pill } = toggleRefs[field];
+
+      if (toggle.dataset.pendingTimeout) {
+        clearTimeout(Number(toggle.dataset.pendingTimeout));
+        delete toggle.dataset.pendingTimeout;
+      }
+      toggle.classList.remove('pending');
+      pill.classList.remove('pending');
+
       toggle.classList.toggle('on', isOn);
       pill.textContent = isOn ? 'ON' : 'OFF';
       pill.classList.toggle('on', isOn);
       pill.classList.toggle('off', !isOn);
     });
+
+    hasRelayStatus = true;
+    checkReady();
   }
   socket.on('relayStatus', applyRelayStatus);
 
@@ -200,7 +251,6 @@
     el.classList.add(statusClass);
   }
 
-  // Ambang batas sesuai spesifikasi:
   function statusTanah(persen){
     if (persen < 30) return { label: 'Kering', cls: 'status-danger' };
     if (persen <= 70) return { label: 'Lembab', cls: 'status-ok' };
@@ -249,6 +299,9 @@
 
     const jamUpdate = new Date(data.updatedAt).toLocaleTimeString('id-ID');
     monitorStatusEl.textContent = `Diperbarui pukul ${jamUpdate}`;
+
+    hasSensorData = true;
+    checkReady();
   });
 
   // ===== Deteksi data basi (stale) =====
@@ -258,6 +311,114 @@
   socket.on('sensorStale', ({ stale }) => {
     staleBannerEl.style.display = stale ? 'block' : 'none';
     monitorGridEl.classList.toggle('is-stale', !!stale);
+  });
+
+  // ===== Jadwal penyiraman =====
+  // Konsep: dashboard cuma alat EDIT. Kirim SELURUH daftar jadwal tiap ada
+  // perubahan (tambah/edit/hapus), ESP1 yang simpan & jalankan sendiri.
+  let jadwalList = []; // {jam, menit, durasi} — sumber kebenaran dari ESP1 (event 'scheduleStatus')
+  let editingIndex = null;
+
+  const scheduleListEl = document.getElementById('scheduleList');
+  const scheduleForm = document.getElementById('scheduleForm');
+  const inputJam = document.getElementById('inputJam');
+  const inputDurasi = document.getElementById('inputDurasi');
+
+  function formatJam(jam, menit){
+    return `${String(jam).padStart(2,'0')}:${String(menit).padStart(2,'0')}`;
+  }
+
+  function renderJadwal(){
+    scheduleListEl.innerHTML = '';
+    const sorted = jadwalList
+      .map((item, idx) => ({ ...item, idx }))
+      .sort((a, b) => (a.jam * 60 + a.menit) - (b.jam * 60 + b.menit));
+
+    sorted.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'schedule-item';
+      row.innerHTML = `
+        <div class="schedule-time">${formatJam(item.jam, item.menit)}</div>
+        <div class="schedule-desc">Penyiraman otomatis</div>
+        <div class="schedule-tag">${item.durasi} menit</div>
+        <div class="schedule-actions">
+          <button class="icon-btn" data-edit="${item.idx}" title="Edit jadwal" type="button">✎</button>
+          <button class="icon-btn danger" data-hapus="${item.idx}" title="Hapus jadwal" type="button">✕</button>
+        </div>
+      `;
+      scheduleListEl.appendChild(row);
+    });
+
+    if (sorted.length === 0) {
+      scheduleListEl.innerHTML = '<div class="schedule-empty">Belum ada jadwal penyiraman.</div>';
+    }
+  }
+
+  function bukaForm(idx = null){
+    editingIndex = idx;
+    if (idx !== null) {
+      const item = jadwalList[idx];
+      inputJam.value = formatJam(item.jam, item.menit);
+      inputDurasi.value = item.durasi;
+    } else {
+      inputJam.value = '';
+      inputDurasi.value = '';
+    }
+    scheduleForm.classList.add('open');
+    inputJam.focus();
+  }
+
+  function tutupForm(){
+    scheduleForm.classList.remove('open');
+    editingIndex = null;
+  }
+
+  document.getElementById('btnTambahJadwal').addEventListener('click', () => bukaForm());
+  document.getElementById('btnBatalJadwal').addEventListener('click', tutupForm);
+
+  document.getElementById('btnSimpanJadwal').addEventListener('click', () => {
+    const jamStr = inputJam.value; // format "HH:MM" dari <input type="time">
+    const durasi = parseInt(inputDurasi.value, 10);
+
+    if (!jamStr || !durasi || durasi <= 0) {
+      alert('Lengkapi jam dan durasi (menit) terlebih dahulu.');
+      return;
+    }
+
+    const [jam, menit] = jamStr.split(':').map(Number);
+    const entry = { jam, menit, durasi };
+
+    const newList = [...jadwalList];
+    if (editingIndex !== null) {
+      newList[editingIndex] = entry;
+    } else {
+      newList.push(entry);
+    }
+
+    socket.emit('updateSchedule', newList);
+    tutupForm();
+    // Tampilan tidak langsung diubah di sini — akan ter-update begitu
+    // ESP1 konfirmasi balik lewat 'scheduleStatus', sama seperti pompa.
+  });
+
+  scheduleListEl.addEventListener('click', (e) => {
+    const editIdx = e.target.dataset.edit;
+    const hapusIdx = e.target.dataset.hapus;
+
+    if (editIdx !== undefined) {
+      bukaForm(Number(editIdx));
+    }
+    if (hapusIdx !== undefined) {
+      if (confirm('Hapus jadwal ini?')) {
+        const newList = jadwalList.filter((_, i) => i !== Number(hapusIdx));
+        socket.emit('updateSchedule', newList);
+      }
+    }
+  });
+
+  socket.on('scheduleStatus', (list) => {
+    jadwalList = Array.isArray(list) ? list : [];
+    renderJadwal();
   });
 </script>
 </body>

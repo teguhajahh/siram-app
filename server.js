@@ -15,20 +15,42 @@ const io = new Server(server);
 // ===== Sajikan dashboard (index.html + styles.css) =====
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===== Koneksi ke broker Mosquitto/EMQX =====
-// Ganti lewat file .env — jangan hardcode IP di sini.
+// ===== Koneksi ke broker MQTT =====
 const MQTT_HOST = process.env.MQTT_HOST;
 const MQTT_PORT = process.env.MQTT_PORT;
 const MQTT_USER = process.env.MQTT_USER;
 const MQTT_PASS = process.env.MQTT_PASS;
-const TOPIC_SENSOR  = process.env.TOPIC_SENSOR;
-const TOPIC_CONTROL = process.env.TOPIC_CONTROL;
-const TOPIC_STATUS  = process.env.TOPIC_STATUS;
+const TOPIC_SENSOR           = process.env.TOPIC_SENSOR;
+const TOPIC_CONTROL          = process.env.TOPIC_CONTROL;
+const TOPIC_STATUS           = process.env.TOPIC_STATUS;
+const TOPIC_SCHEDULE_SET     = process.env.TOPIC_SCHEDULE_SET;
+const TOPIC_SCHEDULE_STATUS  = process.env.TOPIC_SCHEDULE_STATUS;
 
 const mqttUrl = `mqtt://${MQTT_HOST}:${MQTT_PORT}`;
 const mqttOptions = MQTT_USER
   ? { username: MQTT_USER, password: MQTT_PASS }
   : {};
+
+// ===== Validasi .env di awal =====
+// Kalau ada satu saja env var topic yang lupa diisi, ini bakal ketahuan
+// SEKARANG dengan pesan jelas — bukan nanti nyusul error aneh dari dalam
+// library mqtt (misal "Cannot read properties of undefined (reading 'split')")
+// yang nggak langsung nunjuk ke akar masalahnya.
+const requiredEnvVars = {
+  MQTT_HOST, MQTT_PORT,
+  TOPIC_SENSOR, TOPIC_CONTROL, TOPIC_STATUS,
+  TOPIC_SCHEDULE_SET, TOPIC_SCHEDULE_STATUS,
+};
+const missingEnvVars = Object.entries(requiredEnvVars)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
+
+if (missingEnvVars.length > 0) {
+  console.error('[Konfigurasi] File .env belum lengkap — variabel berikut kosong/tidak ada:');
+  missingEnvVars.forEach((key) => console.error(`  - ${key}`));
+  console.error('Cek file .env di folder server (bukan .env.example), lalu jalankan ulang.');
+  process.exit(1);
+}
 
 const mqttClient = mqtt.connect(mqttUrl, mqttOptions);
 
@@ -55,18 +77,23 @@ function markStale() {
 }
 
 // ===== State terakhir di memori =====
-// Supaya klien yang baru connect langsung dapat nilai/kondisi terkini,
-// tidak perlu nunggu publish MQTT berikutnya.
-let lastSensorData = { tanah: null, udara: null, suhu: null, updatedAt: null };
-let lastRelayStatus = { pompa_air: false, pompa_pupuk: false }; // status ASLI dari ESP1, bukan asumsi
+// "Known" flag terpisah dari nilai defaultnya sendiri — supaya dashboard
+// bisa bedakan "belum pernah dapat data asli dari device" vs "device
+// bilang OFF/kosong". Tanpa ini, loading gate di dashboard bisa lolos
+// duluan padahal device belum pernah konfirmasi apa pun.
+let lastSensorData   = { tanah: null, udara: null, suhu: null, updatedAt: null };
+let lastRelayStatus  = { pompa_air: false };
+let relayStatusKnown = false;
+let lastSchedule     = [];
+let scheduleKnown    = false;
 
 mqttClient.on('connect', () => {
   console.log(`[MQTT] Tersambung ke broker ${mqttUrl}`);
-  mqttClient.subscribe([TOPIC_SENSOR, TOPIC_STATUS], (err) => {
+  mqttClient.subscribe([TOPIC_SENSOR, TOPIC_STATUS, TOPIC_SCHEDULE_STATUS], (err) => {
     if (err) {
       console.error('[MQTT] Gagal subscribe:', err.message);
     } else {
-      console.log(`[MQTT] Subscribe ke "${TOPIC_SENSOR}" dan "${TOPIC_STATUS}"`);
+      console.log('[MQTT] Subscribe ke sensor, status, dan schedule/status');
     }
   });
 });
@@ -105,10 +132,18 @@ mqttClient.on('message', (topic, payload) => {
   if (topic === TOPIC_STATUS) {
     lastRelayStatus = {
       pompa_air: !!data.pompa_air,
-      pompa_pupuk: !!data.pompa_pupuk,
     };
+    relayStatusKnown = true;
     io.emit('relayStatus', lastRelayStatus);
     console.log('[MQTT -> Socket.io] relayStatus:', lastRelayStatus);
+    return;
+  }
+
+  if (topic === TOPIC_SCHEDULE_STATUS) {
+    lastSchedule = Array.isArray(data) ? data : [];
+    scheduleKnown = true;
+    io.emit('scheduleStatus', lastSchedule);
+    console.log('[MQTT -> Socket.io] scheduleStatus:', lastSchedule);
     return;
   }
 });
@@ -117,23 +152,25 @@ mqttClient.on('message', (topic, payload) => {
 io.on('connection', (socket) => {
   console.log(`[Socket.io] Client terhubung: ${socket.id}`);
 
-  // Kirim state terakhir yang tersimpan, biar dashboard yang baru dibuka
-  // langsung sinkron, tidak nunggu update berikutnya
+  // Hanya kirim state yang SUDAH PERNAH dikonfirmasi asli oleh device —
+  // biar loading gate di dashboard tidak lolos duluan dengan data palsu.
   if (lastSensorData.updatedAt) {
     socket.emit('sensorData', lastSensorData);
   }
-  socket.emit('relayStatus', lastRelayStatus);
+  if (relayStatusKnown) {
+    socket.emit('relayStatus', lastRelayStatus);
+  }
+  if (scheduleKnown) {
+    socket.emit('scheduleStatus', lastSchedule);
+  }
   // Kabari klien baru soal status stale saat ini juga (bukan cuma klien lama)
   socket.emit('sensorStale', { stale: isStale });
 
-  // Browser mengirim perintah, contoh: socket.emit('controlRelay', { pompa_air: true })
-  // Field yang tidak disertakan tidak diubah — sama seperti kontrak di ESP1.
   socket.on('controlRelay', (cmd) => {
     if (typeof cmd !== 'object' || cmd === null) return;
 
     const payload = {};
     if (typeof cmd.pompa_air === 'boolean') payload.pompa_air = cmd.pompa_air;
-    if (typeof cmd.pompa_pupuk === 'boolean') payload.pompa_pupuk = cmd.pompa_pupuk;
 
     if (Object.keys(payload).length === 0) {
       console.warn('[Socket.io] controlRelay diabaikan, payload tidak valid:', cmd);
@@ -142,6 +179,28 @@ io.on('connection', (socket) => {
 
     mqttClient.publish(TOPIC_CONTROL, JSON.stringify(payload));
     console.log('[Socket.io -> MQTT] controlRelay:', payload);
+  });
+
+  // Dashboard kirim seluruh daftar jadwal (bukan satu per satu) — ESP1
+  // akan mengganti seluruh jadwal tersimpannya dengan daftar ini.
+  // Contoh: [{ jam: 6, menit: 0, durasi: 10 }, ...]
+  socket.on('updateSchedule', (list) => {
+    if (!Array.isArray(list)) {
+      console.warn('[Socket.io] updateSchedule diabaikan, bukan array:', list);
+      return;
+    }
+    const valid = list.every((item) =>
+      typeof item.jam === 'number' && item.jam >= 0 && item.jam <= 23 &&
+      typeof item.menit === 'number' && item.menit >= 0 && item.menit <= 59 &&
+      typeof item.durasi === 'number' && item.durasi > 0
+    );
+    if (!valid) {
+      console.warn('[Socket.io] updateSchedule diabaikan, format item tidak valid:', list);
+      return;
+    }
+
+    mqttClient.publish(TOPIC_SCHEDULE_SET, JSON.stringify(list));
+    console.log('[Socket.io -> MQTT] updateSchedule:', list);
   });
 
   socket.on('disconnect', () => {
@@ -156,6 +215,7 @@ app.get('/health', (req, res) => {
     mqttConnected: mqttClient.connected,
     lastSensorData,
     lastRelayStatus,
+    lastSchedule,
     sensorStale: isStale,
   });
 });
