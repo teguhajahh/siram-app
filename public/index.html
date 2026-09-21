@@ -413,7 +413,7 @@
 
     // MODE STANDBY: abaikan semua ucapan kecuali yang mengandung wake word.
     if (voiceMode === 'wake') {
-      if (!text.includes('siramli')) return;
+      if (!text.includes('si ramli')) return;
 
       // Hapus wake word lalu cek apakah wake word dan perintah ada dalam satu kalimat.
       const afterWake = text.replace(/\bsiramli\b/g, ' ').replace(/\s+/g, ' ').trim();
