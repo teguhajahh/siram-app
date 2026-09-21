@@ -6,6 +6,46 @@
 <title>Panel Kontrol Irigasi — SIRAMLI V2</title>
 <link rel = "stylesheet" href="styles.css">
 <script src="/socket.io/socket.io.js"></script>
+
+<style>
+  .voice-control {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  .voice-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .voice-btn {
+    border: 0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font: inherit;
+    cursor: pointer;
+    background: #2f6f8f;
+    color: #fff;
+  }
+  .voice-btn:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+  }
+  .voice-btn.listening {
+    background: #b64b4b;
+  }
+  .voice-status {
+    font-size: .9rem;
+    opacity: .8;
+  }
+  .voice-command {
+    margin-top: 8px;
+    font-size: .85rem;
+    opacity: .7;
+  }
+</style>
+
 </head>
 <body>
 
@@ -53,6 +93,15 @@
           <span class="status-pill off" id="pillAir">OFF</span>
           <div class="toggle" id="toggleAir"><div class="knob"></div></div>
         </div>
+      </div>
+
+      <div class="voice-control">
+        <div class="card-title">Kontrol Suara</div>
+        <div class="voice-row">
+          <button class="voice-btn" id="btnVoice" type="button">🎙️ Bicara</button>
+          <span class="voice-status" id="voiceStatus">Siap menerima perintah suara.</span>
+        </div>
+        <div class="voice-command" id="voiceCommand">Perintah terakhir: —</div>
       </div>
     </div>
 
@@ -172,44 +221,60 @@
   }
 
   // ===== Kontrol relay (dengan pending-lock, fix lag) =====
-  // Setiap toggle dikunci ('pending') begitu diklik, supaya:
-  // 1. Klik berulang sebelum ada balasan tidak mengirim perintah ganda/salah arah
-  // 2. Ada feedback visual jelas kalau perintah sedang "dalam perjalanan"
-  // Kunci lepas otomatis begitu 'relayStatus' konfirmasi asli datang,
-  // atau otomatis lepas paksa setelah 8 detik kalau device tidak membalas
-  // (misal sedang offline) — supaya tombol tidak macet selamanya.
+  // Toggle dan kontrol suara memakai fungsi yang sama.
+  // Jadi sumber perintahnya boleh berbeda, tetapi jalur ke ESP32 tetap satu.
   const toggleRefs = {
-    pompa_air: { toggle: document.getElementById('toggleAir'), pill: document.getElementById('pillAir') },
+    pompa_air: {
+      toggle: document.getElementById('toggleAir'),
+      pill: document.getElementById('pillAir')
+    },
   };
 
-  function setupToggle(fieldName){
+  function requestRelayState(fieldName, nextState) {
     const { toggle, pill } = toggleRefs[fieldName];
+
+    if (!toggle) return;
+
+    // Jangan kirim perintah baru selama perintah sebelumnya masih pending.
+    if (toggle.classList.contains('pending')) {
+      return false;
+    }
+
+    toggle.classList.add('pending');
+    pill.classList.remove('on', 'off');
+    pill.classList.add('pending');
+    pill.textContent = '...';
+
+    socket.emit('controlRelay', { [fieldName]: nextState });
+
+    const timeoutId = setTimeout(() => {
+      toggle.classList.remove('pending');
+      pill.classList.remove('pending');
+      pill.classList.toggle('on', toggle.classList.contains('on'));
+      pill.classList.toggle('off', !toggle.classList.contains('on'));
+      pill.textContent = toggle.classList.contains('on') ? 'ON' : 'OFF';
+      delete toggle.dataset.pendingTimeout;
+    }, 8000);
+
+    toggle.dataset.pendingTimeout = timeoutId;
+    return true;
+  }
+
+  function setupToggle(fieldName){
+    const { toggle } = toggleRefs[fieldName];
+
     toggle.addEventListener('click', () => {
-      if (toggle.classList.contains('pending')) return; // masih nunggu balasan sebelumnya
-
       const nextState = !toggle.classList.contains('on');
-      toggle.classList.add('pending');
-      pill.classList.remove('on', 'off');
-      pill.classList.add('pending');
-      pill.textContent = '...';
-
-      socket.emit('controlRelay', { [fieldName]: nextState });
-
-      const timeoutId = setTimeout(() => {
-        toggle.classList.remove('pending');
-        pill.classList.remove('pending');
-        pill.classList.toggle('on', toggle.classList.contains('on'));
-        pill.classList.toggle('off', !toggle.classList.contains('on'));
-        pill.textContent = toggle.classList.contains('on') ? 'ON' : 'OFF';
-      }, 8000);
-      toggle.dataset.pendingTimeout = timeoutId;
+      requestRelayState(fieldName, nextState);
     });
   }
+
   setupToggle('pompa_air');
 
   function applyRelayStatus(status){
     Object.keys(toggleRefs).forEach((field) => {
       if (!(field in status)) return;
+
       const isOn = !!status[field];
       const { toggle, pill } = toggleRefs[field];
 
@@ -217,6 +282,7 @@
         clearTimeout(Number(toggle.dataset.pendingTimeout));
         delete toggle.dataset.pendingTimeout;
       }
+
       toggle.classList.remove('pending');
       pill.classList.remove('pending');
 
@@ -230,6 +296,118 @@
     checkReady();
   }
   socket.on('relayStatus', applyRelayStatus);
+
+  // ===== Kontrol suara =====
+  const btnVoice = document.getElementById('btnVoice');
+  const voiceStatusEl = document.getElementById('voiceStatus');
+  const voiceCommandEl = document.getElementById('voiceCommand');
+
+  const SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  let recognition = null;
+
+  function setVoiceStatus(message) {
+    voiceStatusEl.textContent = message;
+  }
+
+  function normalizeVoiceText(text) {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  function processVoiceCommand(rawText) {
+    const text = normalizeVoiceText(rawText);
+    voiceCommandEl.textContent = `Perintah terakhir: "${rawText}"`;
+
+    // Perintah yang jelas untuk pompa AIR.
+    const onCommands = [
+      'nyalakan pompa',
+      'hidupkan pompa',
+      'aktifkan pompa',
+      'pompa hidup',
+      'pompa nyala'
+    ];
+
+    const offCommands = [
+      'matikan pompa',
+      'nonaktifkan pompa',
+      'pompa mati',
+      'pompa padam'
+    ];
+
+    // Cek OFF lebih dulu agar frasa negatif tidak salah dikenali.
+    if (offCommands.some(cmd => text.includes(cmd))) {
+      const sent = requestRelayState('pompa_air', false);
+      setVoiceStatus(
+        sent
+          ? 'Perintah OFF dikirim ke pompa.'
+          : 'Pompa sedang memproses perintah sebelumnya.'
+      );
+      return;
+    }
+
+    if (onCommands.some(cmd => text.includes(cmd))) {
+      const sent = requestRelayState('pompa_air', true);
+      setVoiceStatus(
+        sent
+          ? 'Perintah ON dikirim ke pompa.'
+          : 'Pompa sedang memproses perintah sebelumnya.'
+      );
+      return;
+    }
+
+    setVoiceStatus('Perintah tidak dikenali. Coba: "nyalakan pompa" atau "matikan pompa".');
+  }
+
+  if (!SpeechRecognition) {
+    btnVoice.disabled = true;
+    setVoiceStatus('Browser ini belum mendukung Speech Recognition.');
+  } else {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      btnVoice.classList.add('listening');
+      btnVoice.textContent = '🔴 Mendengarkan...';
+      setVoiceStatus('Silakan ucapkan perintah.');
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      processVoiceCommand(transcript);
+    };
+
+    recognition.onerror = (event) => {
+      const messages = {
+        'not-allowed': 'Izin mikrofon ditolak oleh browser.',
+        'audio-capture': 'Mikrofon tidak ditemukan atau sedang bermasalah.',
+        'no-speech': 'Tidak terdengar suara. Coba lagi.',
+        'network': 'Terjadi masalah jaringan pada Speech Recognition.'
+      };
+
+      setVoiceStatus(messages[event.error] || `Gagal mengenali suara: ${event.error}`);
+    };
+
+    recognition.onend = () => {
+      btnVoice.classList.remove('listening');
+      btnVoice.textContent = '🎙️ Bicara';
+    };
+
+    btnVoice.addEventListener('click', () => {
+      try {
+        recognition.start();
+      } catch (error) {
+        // Browser dapat melempar error jika start() dipanggil saat masih aktif.
+        setVoiceStatus('Pengenalan suara masih aktif.');
+      }
+    });
+  }
 
   // ===== Data sensor real-time =====
   const valTanahEl = document.getElementById('valTanah');
