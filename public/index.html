@@ -98,10 +98,10 @@
       <div class="voice-control">
         <div class="card-title">Kontrol Suara</div>
         <div class="voice-row">
-          <button class="voice-btn" id="btnVoice" type="button">🎙️ Bicara</button>
-          <span class="voice-status" id="voiceStatus">Siap menerima perintah suara.</span>
+          <button class="voice-btn" id="btnVoice" type="button">🎙️ Aktifkan Mic</button>
+          <span class="voice-status" id="voiceStatus">Menunggu kata kunci “Siramli”...</span>
         </div>
-        <div class="voice-command" id="voiceCommand">Perintah terakhir: —</div>
+        <div class="voice-command" id="voiceCommand">Mode: menunggu “Siramli”</div>
       </div>
     </div>
 
@@ -297,7 +297,16 @@
   }
   socket.on('relayStatus', applyRelayStatus);
 
-  // ===== Kontrol suara =====
+  // ===== Kontrol suara SIRAMLI (Wake Word) =====
+  // Alur:
+  // 1. Dashboard mencoba mengaktifkan speech recognition otomatis.
+  // 2. Mode standby hanya mencari kata "Siramli".
+  // 3. Setelah "Siramli" terdeteksi, selama beberapa detik sistem menunggu
+  //    perintah "nyalakan pompa" / "matikan pompa".
+  // 4. Setelah perintah diproses, sistem kembali ke mode standby.
+  // 5. Jika browser menghentikan recognition, onend otomatis mencoba start lagi.
+  // 6. Jika izin mikrofon ditolak browser, tombol tetap bisa dipakai sebagai
+  //    fallback untuk mengaktifkannya setelah interaksi pengguna.
   const btnVoice = document.getElementById('btnVoice');
   const voiceStatusEl = document.getElementById('voiceStatus');
   const voiceCommandEl = document.getElementById('voiceCommand');
@@ -306,106 +315,238 @@
     window.SpeechRecognition || window.webkitSpeechRecognition;
 
   let recognition = null;
+  let recognitionRunning = false;
+  let shouldKeepListening = true;
+  let restartTimer = null;
+  let commandTimer = null;
+
+  // MODE WAKE = menunggu "Siramli"
+  // MODE COMMAND = sudah mendengar "Siramli", sekarang menunggu perintah pompa
+  let voiceMode = 'wake';
+  const COMMAND_WINDOW_MS = 7000;
 
   function setVoiceStatus(message) {
     voiceStatusEl.textContent = message;
   }
 
   function normalizeVoiceText(text) {
-    return text
+    return String(text || '')
       .toLowerCase()
       .trim()
+      .replace(/[.,!?;:]/g, ' ')
       .replace(/\s+/g, ' ');
   }
 
-  function processVoiceCommand(rawText) {
-    const text = normalizeVoiceText(rawText);
-    voiceCommandEl.textContent = `Perintah terakhir: "${rawText}"`;
+  function enterWakeMode() {
+    voiceMode = 'wake';
+    if (commandTimer) {
+      clearTimeout(commandTimer);
+      commandTimer = null;
+    }
+    voiceCommandEl.textContent = 'Mode: menunggu “Siramli”';
+    setVoiceStatus('Mic aktif. Menunggu kata kunci “Siramli”...');
+  }
 
-    // Perintah yang jelas untuk pompa AIR.
-    const onCommands = [
-      'nyalakan pompa',
-      'hidupkan pompa',
-      'aktifkan pompa',
-      'pompa hidup',
-      'pompa nyala'
+  function enterCommandMode() {
+    voiceMode = 'command';
+    voiceCommandEl.textContent = 'Mode: menunggu perintah pompa';
+    setVoiceStatus('Siramli terdeteksi. Katakan “nyalakan pompa” atau “matikan pompa”.');
+
+    if (commandTimer) clearTimeout(commandTimer);
+    commandTimer = setTimeout(() => {
+      enterWakeMode();
+    }, COMMAND_WINDOW_MS);
+  }
+
+  function isPumpOnCommand(text) {
+    const onPatterns = [
+      /nyalakan\s+(?:pompa(?:\s+air)?)/,
+      /hidupkan\s+(?:pompa(?:\s+air)?)/,
+      /aktifkan\s+(?:pompa(?:\s+air)?)/,
+      /(?:pompa(?:\s+air)?)\s+(?:nyala|hidup|aktif)/
     ];
+    return onPatterns.some(pattern => pattern.test(text));
+  }
 
-    const offCommands = [
-      'matikan pompa',
-      'nonaktifkan pompa',
-      'pompa mati',
-      'pompa padam'
+  function isPumpOffCommand(text) {
+    const offPatterns = [
+      /matikan\s+(?:pompa(?:\s+air)?)/,
+      /nonaktifkan\s+(?:pompa(?:\s+air)?)/,
+      /(?:pompa(?:\s+air)?)\s+(?:mati|padam|nonaktif)/
     ];
+    return offPatterns.some(pattern => pattern.test(text));
+  }
 
-    // Cek OFF lebih dulu agar frasa negatif tidak salah dikenali.
-    if (offCommands.some(cmd => text.includes(cmd))) {
+  function processPumpCommand(text) {
+    const normalized = normalizeVoiceText(text);
+    voiceCommandEl.textContent = `Perintah terdengar: “${text}”`;
+
+    // OFF dicek lebih dulu agar frasa yang mengandung "matikan" tidak terbaca ON.
+    if (isPumpOffCommand(normalized)) {
       const sent = requestRelayState('pompa_air', false);
       setVoiceStatus(
         sent
-          ? 'Perintah OFF dikirim ke pompa.'
-          : 'Pompa sedang memproses perintah sebelumnya.'
+          ? 'Perintah MATIKAN POMPA dikirim. Menunggu konfirmasi ESP32...'
+          : 'Pompa masih memproses perintah sebelumnya.'
       );
-      return;
+      enterWakeMode();
+      return true;
     }
 
-    if (onCommands.some(cmd => text.includes(cmd))) {
+    if (isPumpOnCommand(normalized)) {
       const sent = requestRelayState('pompa_air', true);
       setVoiceStatus(
         sent
-          ? 'Perintah ON dikirim ke pompa.'
-          : 'Pompa sedang memproses perintah sebelumnya.'
+          ? 'Perintah NYALAKAN POMPA dikirim. Menunggu konfirmasi ESP32...'
+          : 'Pompa masih memproses perintah sebelumnya.'
       );
+      enterWakeMode();
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleVoiceResult(rawText) {
+    const text = normalizeVoiceText(rawText);
+    if (!text) return;
+
+    // MODE STANDBY: abaikan semua ucapan kecuali yang mengandung wake word.
+    if (voiceMode === 'wake') {
+      if (!text.includes('siramli')) return;
+
+      // Hapus wake word lalu cek apakah wake word dan perintah ada dalam satu kalimat.
+      const afterWake = text.replace(/\bsiramli\b/g, ' ').replace(/\s+/g, ' ').trim();
+
+      if (afterWake && processPumpCommand(afterWake)) {
+        return;
+      }
+
+      enterCommandMode();
       return;
     }
 
-    setVoiceStatus('Perintah tidak dikenali. Coba: "nyalakan pompa" atau "matikan pompa".');
+    // MODE COMMAND: sekarang semua yang didengar diperlakukan sebagai perintah.
+    if (processPumpCommand(text)) return;
+
+    setVoiceStatus('Perintah belum dikenali. Katakan “nyalakan pompa” atau “matikan pompa”.');
+  }
+
+  function updateVoiceButton() {
+    if (!recognition) return;
+
+    if (recognitionRunning) {
+      btnVoice.classList.add('listening');
+      btnVoice.textContent = voiceMode === 'wake'
+        ? '🔴 Mic Aktif'
+        : '🟠 Menunggu Perintah';
+    } else {
+      btnVoice.classList.remove('listening');
+      btnVoice.textContent = '🎙️ Aktifkan Mic';
+    }
+  }
+
+  function scheduleRecognitionRestart() {
+    if (!shouldKeepListening || recognitionRunning || restartTimer) return;
+
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      startRecognition();
+    }, 700);
+  }
+
+  function startRecognition() {
+    if (!recognition || !shouldKeepListening || recognitionRunning) return;
+
+    try {
+      recognition.start();
+    } catch (error) {
+      // InvalidStateError biasanya berarti recognition memang baru saja aktif.
+      // Jangan spam start(); tunggu event onend / jadwal restart.
+      scheduleRecognitionRestart();
+    }
   }
 
   if (!SpeechRecognition) {
     btnVoice.disabled = true;
-    setVoiceStatus('Browser ini belum mendukung Speech Recognition.');
+    setVoiceStatus('Browser ini belum mendukung Speech Recognition. Gunakan Chrome/Edge versi terbaru.');
   } else {
     recognition = new SpeechRecognition();
     recognition.lang = 'id-ID';
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
-      btnVoice.classList.add('listening');
-      btnVoice.textContent = '🔴 Mendengarkan...';
-      setVoiceStatus('Silakan ucapkan perintah.');
+      recognitionRunning = true;
+      updateVoiceButton();
+      setVoiceStatus(
+        voiceMode === 'wake'
+          ? 'Mic aktif. Menunggu kata kunci “Siramli”...'
+          : 'Siramli terdeteksi. Silakan sebutkan perintah pompa.'
+      );
     };
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      processVoiceCommand(transcript);
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (!event.results[i].isFinal) continue;
+
+        const transcript = event.results[i][0].transcript.trim();
+        if (!transcript) continue;
+
+        console.log('[SIRAMLI VOICE]', transcript);
+        handleVoiceResult(transcript);
+      }
     };
 
     recognition.onerror = (event) => {
+      console.warn('[SIRAMLI VOICE ERROR]', event.error);
+
       const messages = {
-        'not-allowed': 'Izin mikrofon ditolak oleh browser.',
-        'audio-capture': 'Mikrofon tidak ditemukan atau sedang bermasalah.',
-        'no-speech': 'Tidak terdengar suara. Coba lagi.',
-        'network': 'Terjadi masalah jaringan pada Speech Recognition.'
+        'not-allowed': 'Izin mikrofon ditolak. Klik “Aktifkan Mic” lalu izinkan mikrofon.',
+        'service-not-allowed': 'Speech Recognition diblokir browser. Izinkan mikrofon/Speech Recognition untuk situs ini.',
+        'audio-capture': 'Mikrofon tidak ditemukan atau sedang digunakan aplikasi lain.',
+        'no-speech': 'Tidak ada suara. Sistem akan kembali menunggu “Siramli”.',
+        'network': 'Speech Recognition membutuhkan koneksi jaringan pada browser tertentu.'
       };
 
-      setVoiceStatus(messages[event.error] || `Gagal mengenali suara: ${event.error}`);
+      setVoiceStatus(messages[event.error] || `Speech Recognition error: ${event.error}`);
+
+      // Permission denial perlu interaksi user; jangan loop tanpa akhir.
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        shouldKeepListening = false;
+      }
     };
 
     recognition.onend = () => {
-      btnVoice.classList.remove('listening');
-      btnVoice.textContent = '🎙️ Bicara';
+      recognitionRunning = false;
+      updateVoiceButton();
+
+      // Bila recognition berhenti sendiri, otomatis hidupkan lagi.
+      // Ini membuat mode wake word tetap aktif selama halaman terbuka.
+      if (shouldKeepListening) {
+        setVoiceStatus(
+          voiceMode === 'wake'
+            ? 'Mic berhenti sebentar. Menyambung kembali dan menunggu “Siramli”...'
+            : 'Menyambung kembali untuk menunggu perintah...'
+        );
+        scheduleRecognitionRestart();
+      }
     };
 
+    // Tombol = fallback manual / mengaktifkan kembali setelah izin ditolak.
     btnVoice.addEventListener('click', () => {
-      try {
-        recognition.start();
-      } catch (error) {
-        // Browser dapat melempar error jika start() dipanggil saat masih aktif.
-        setVoiceStatus('Pengenalan suara masih aktif.');
-      }
+      shouldKeepListening = true;
+      enterWakeMode();
+      startRecognition();
+    });
+
+    // Coba aktifkan otomatis saat dashboard dibuka.
+    // Browser dapat meminta izin atau menolak start otomatis; bila itu terjadi,
+    // pengguna cukup klik tombol sekali.
+    window.addEventListener('load', () => {
+      enterWakeMode();
+      setTimeout(() => startRecognition(), 300);
     });
   }
 
