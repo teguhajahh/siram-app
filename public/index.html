@@ -99,9 +99,9 @@
         <div class="card-title">Kontrol Suara</div>
         <div class="voice-row">
           <button class="voice-btn" id="btnVoice" type="button">🎙️ Aktifkan Mic</button>
-          <span class="voice-status" id="voiceStatus">Menunggu kata kunci “Siramli”...</span>
+          <span class="voice-status" id="voiceStatus">Klik "Aktifkan Mic" lalu katakan "nyalakan pompa" atau "matikan pompa"</span>
         </div>
-        <div class="voice-command" id="voiceCommand">Mode: menunggu “Siramli”</div>
+        <div class="voice-command" id="voiceCommand">Perintah terakhir: -</div>
       </div>
     </div>
 
@@ -208,8 +208,6 @@
   const socket = io();
 
   // ===== LOADING GATE =====
-  // Overlay baru hilang setelah SEMUANYA (sensor + status pompa) sudah
-  // pernah dikonfirmasi asli dari device — bukan sekadar socket connect.
   let hasSensorData = false;
   let hasRelayStatus = false;
   const loadingOverlay = document.getElementById('loadingOverlay');
@@ -221,8 +219,6 @@
   }
 
   // ===== Kontrol relay (dengan pending-lock, fix lag) =====
-  // Toggle dan kontrol suara memakai fungsi yang sama.
-  // Jadi sumber perintahnya boleh berbeda, tetapi jalur ke ESP32 tetap satu.
   const toggleRefs = {
     pompa_air: {
       toggle: document.getElementById('toggleAir'),
@@ -235,7 +231,6 @@
 
     if (!toggle) return;
 
-    // Jangan kirim perintah baru selama perintah sebelumnya masih pending.
     if (toggle.classList.contains('pending')) {
       return false;
     }
@@ -297,15 +292,15 @@
   }
   socket.on('relayStatus', applyRelayStatus);
 
-  // ===== Kontrol suara SIRAMLI (Wake Word) =====
-  // Alur:
-  // 1. Dashboard mencoba mengaktifkan speech recognition otomatis.
-  // 2. Mode standby hanya mencari kata "Siramli".
-  // 3. Setelah "Siramli" terdeteksi, selama beberapa detik sistem menunggu
-  //    perintah "nyalakan pompa" / "matikan pompa".
-  // 4. Setelah perintah diproses, sistem kembali ke mode standby.
-  // 5. Jika browser menghentikan recognition, onend otomatis mencoba start lagi.
-  // 6. Jika izin mikrofon ditolak browser, tombol tetap bisa dipakai sebagai
+  // ===== Kontrol suara SIRAMLI (LANGSUNG PERINTAH, tanpa wake word) =====
+  // Alur baru:
+  // 1. User klik "Aktifkan Mic".
+  // 2. Speech recognition langsung berjalan terus-menerus (continuous).
+  // 3. Setiap kalimat final yang tertangkap LANGSUNG dicek sebagai perintah
+  //    "nyalakan pompa" / "matikan pompa" — tidak perlu ucapkan "Siramli" lagi.
+  // 4. Jika browser menghentikan recognition, onend otomatis mencoba start lagi
+  //    selama shouldKeepListening masih true.
+  // 5. Jika izin mikrofon ditolak browser, tombol tetap bisa dipakai sebagai
   //    fallback untuk mengaktifkannya setelah interaksi pengguna.
   const btnVoice = document.getElementById('btnVoice');
   const voiceStatusEl = document.getElementById('voiceStatus');
@@ -318,44 +313,13 @@
   let recognitionRunning = false;
   let shouldKeepListening = true;
   let restartTimer = null;
-  let commandTimer = null;
 
-  // MODE WAKE = menunggu "Siramli"
-  // MODE COMMAND = sudah mendengar "Siramli", sekarang menunggu perintah pompa
-  let voiceMode = 'wake';
-  const COMMAND_WINDOW_MS = 7000;
-
-  function setVoiceStatus(message) {
-    voiceStatusEl.textContent = message;
+  function setVoiceStatus(text){
+    voiceStatusEl.textContent = text;
   }
 
-  function normalizeVoiceText(text) {
-    return String(text || '')
-      .toLowerCase()
-      .trim()
-      .replace(/[.,!?;:]/g, ' ')
-      .replace(/\s+/g, ' ');
-  }
-
-  function enterWakeMode() {
-    voiceMode = 'wake';
-    if (commandTimer) {
-      clearTimeout(commandTimer);
-      commandTimer = null;
-    }
-    voiceCommandEl.textContent = 'Mode: menunggu “Siramli”';
-    setVoiceStatus('Mic aktif. Menunggu kata kunci “Siramli”...');
-  }
-
-  function enterCommandMode() {
-    voiceMode = 'command';
-    voiceCommandEl.textContent = 'Mode: menunggu perintah pompa';
-    setVoiceStatus('Siramli terdeteksi. Katakan “nyalakan pompa” atau “matikan pompa”.');
-
-    if (commandTimer) clearTimeout(commandTimer);
-    commandTimer = setTimeout(() => {
-      enterWakeMode();
-    }, COMMAND_WINDOW_MS);
+  function normalizeVoiceText(text){
+    return text.toLowerCase().trim();
   }
 
   function isPumpOnCommand(text) {
@@ -379,17 +343,16 @@
 
   function processPumpCommand(text) {
     const normalized = normalizeVoiceText(text);
-    voiceCommandEl.textContent = `Perintah terdengar: “${text}”`;
+    voiceCommandEl.textContent = `Perintah terdengar: "${text}"`;
 
     // OFF dicek lebih dulu agar frasa yang mengandung "matikan" tidak terbaca ON.
     if (isPumpOffCommand(normalized)) {
       const sent = requestRelayState('pompa_air', false);
       setVoiceStatus(
         sent
-          ? 'Perintah MATIKAN POMPA dikirim. Menunggu konfirmasi ESP32...'
+          ? 'Perintah MATIKAN POMPA dikirim.'
           : 'Pompa masih memproses perintah sebelumnya.'
       );
-      enterWakeMode();
       return true;
     }
 
@@ -397,10 +360,9 @@
       const sent = requestRelayState('pompa_air', true);
       setVoiceStatus(
         sent
-          ? 'Perintah NYALAKAN POMPA dikirim. Menunggu konfirmasi ESP32...'
+          ? 'Perintah NYALAKAN POMPA dikirim.'
           : 'Pompa masih memproses perintah sebelumnya.'
       );
-      enterWakeMode();
       return true;
     }
 
@@ -411,25 +373,9 @@
     const text = normalizeVoiceText(rawText);
     if (!text) return;
 
-    // MODE STANDBY: abaikan semua ucapan kecuali yang mengandung wake word.
-    if (voiceMode === 'wake') {
-      if (!text.includes('si ramli')) return;
-
-      // Hapus wake word lalu cek apakah wake word dan perintah ada dalam satu kalimat.
-      const afterWake = text.replace(/\bsiramli\b/g, ' ').replace(/\s+/g, ' ').trim();
-
-      if (afterWake && processPumpCommand(afterWake)) {
-        return;
-      }
-
-      enterCommandMode();
-      return;
-    }
-
-    // MODE COMMAND: sekarang semua yang didengar diperlakukan sebagai perintah.
     if (processPumpCommand(text)) return;
 
-    setVoiceStatus('Perintah belum dikenali. Katakan “nyalakan pompa” atau “matikan pompa”.');
+    setVoiceStatus('Perintah belum dikenali. Katakan "nyalakan pompa" atau "matikan pompa".');
   }
 
   function updateVoiceButton() {
@@ -437,9 +383,7 @@
 
     if (recognitionRunning) {
       btnVoice.classList.add('listening');
-      btnVoice.textContent = voiceMode === 'wake'
-        ? '🔴 Mic Aktif'
-        : '🟠 Menunggu Perintah';
+      btnVoice.textContent = '🔴 Mic Aktif';
     } else {
       btnVoice.classList.remove('listening');
       btnVoice.textContent = '🎙️ Aktifkan Mic';
@@ -461,8 +405,6 @@
     try {
       recognition.start();
     } catch (error) {
-      // InvalidStateError biasanya berarti recognition memang baru saja aktif.
-      // Jangan spam start(); tunggu event onend / jadwal restart.
       scheduleRecognitionRestart();
     }
   }
@@ -480,11 +422,7 @@
     recognition.onstart = () => {
       recognitionRunning = true;
       updateVoiceButton();
-      setVoiceStatus(
-        voiceMode === 'wake'
-          ? 'Mic aktif. Menunggu kata kunci “Siramli”...'
-          : 'Siramli terdeteksi. Silakan sebutkan perintah pompa.'
-      );
+      setVoiceStatus('Mic aktif. Katakan "nyalakan pompa" atau "matikan pompa".');
     };
 
     recognition.onresult = (event) => {
@@ -503,10 +441,10 @@
       console.warn('[SIRAMLI VOICE ERROR]', event.error);
 
       const messages = {
-        'not-allowed': 'Izin mikrofon ditolak. Klik “Aktifkan Mic” lalu izinkan mikrofon.',
+        'not-allowed': 'Izin mikrofon ditolak. Klik "Aktifkan Mic" lalu izinkan mikrofon.',
         'service-not-allowed': 'Speech Recognition diblokir browser. Izinkan mikrofon/Speech Recognition untuk situs ini.',
         'audio-capture': 'Mikrofon tidak ditemukan atau sedang digunakan aplikasi lain.',
-        'no-speech': 'Tidak ada suara. Sistem akan kembali menunggu “Siramli”.',
+        'no-speech': 'Tidak ada suara terdengar. Mic tetap aktif, coba ucapkan perintah lagi.',
         'network': 'Speech Recognition membutuhkan koneksi jaringan pada browser tertentu.'
       };
 
@@ -522,14 +460,10 @@
       recognitionRunning = false;
       updateVoiceButton();
 
-      // Bila recognition berhenti sendiri, otomatis hidupkan lagi.
-      // Ini membuat mode wake word tetap aktif selama halaman terbuka.
+      // Bila recognition berhenti sendiri, otomatis hidupkan lagi selama
+      // pengguna belum mematikan mic.
       if (shouldKeepListening) {
-        setVoiceStatus(
-          voiceMode === 'wake'
-            ? 'Mic berhenti sebentar. Menyambung kembali dan menunggu “Siramli”...'
-            : 'Menyambung kembali untuk menunggu perintah...'
-        );
+        setVoiceStatus('Mic berhenti sebentar. Menyambung kembali...');
         scheduleRecognitionRestart();
       }
     };
@@ -537,15 +471,11 @@
     // Tombol = fallback manual / mengaktifkan kembali setelah izin ditolak.
     btnVoice.addEventListener('click', () => {
       shouldKeepListening = true;
-      enterWakeMode();
       startRecognition();
     });
 
     // Coba aktifkan otomatis saat dashboard dibuka.
-    // Browser dapat meminta izin atau menolak start otomatis; bila itu terjadi,
-    // pengguna cukup klik tombol sekali.
     window.addEventListener('load', () => {
-      enterWakeMode();
       setTimeout(() => startRecognition(), 300);
     });
   }
@@ -624,18 +554,13 @@
   });
 
   // ===== Deteksi data basi (stale) =====
-  // Server yang memutuskan kapan data dianggap basi (lihat STALE_TIMEOUT_MS
-  // di server.js), browser cuma menampilkan peringatannya supaya orang di
-  // lapangan tidak salah kira sensor masih hidup padahal sudah lama diam.
   socket.on('sensorStale', ({ stale }) => {
     staleBannerEl.style.display = stale ? 'block' : 'none';
     monitorGridEl.classList.toggle('is-stale', !!stale);
   });
 
   // ===== Jadwal penyiraman =====
-  // Konsep: dashboard cuma alat EDIT. Kirim SELURUH daftar jadwal tiap ada
-  // perubahan (tambah/edit/hapus), ESP1 yang simpan & jalankan sendiri.
-  let jadwalList = []; // {jam, menit, durasi} — sumber kebenaran dari ESP1 (event 'scheduleStatus')
+  let jadwalList = [];
   let editingIndex = null;
 
   const scheduleListEl = document.getElementById('scheduleList');
@@ -696,7 +621,7 @@
   document.getElementById('btnBatalJadwal').addEventListener('click', tutupForm);
 
   document.getElementById('btnSimpanJadwal').addEventListener('click', () => {
-    const jamStr = inputJam.value; // format "HH:MM" dari <input type="time">
+    const jamStr = inputJam.value;
     const durasi = parseInt(inputDurasi.value, 10);
 
     if (!jamStr || !durasi || durasi <= 0) {
@@ -716,8 +641,6 @@
 
     socket.emit('updateSchedule', newList);
     tutupForm();
-    // Tampilan tidak langsung diubah di sini — akan ter-update begitu
-    // ESP1 konfirmasi balik lewat 'scheduleStatus', sama seperti pompa.
   });
 
   scheduleListEl.addEventListener('click', (e) => {
